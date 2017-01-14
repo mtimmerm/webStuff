@@ -413,14 +413,17 @@ function init() {
     	width:10px;
     	border-top: 2px solid #CCC;
     }
+    @media print {
+        .noprint {display: none;}
+    }
 </style>
 </HEAD>
 <BODY>
-<table class="wrap">
+<table class="wrap noprint">
 <tr><td class="label">Resolution</td><td class="ctrl"><div class="slider" data-min="1" data-max="20" data-var="rescontrol"></div></td><td id="resout" class="readout"></td></tr>
 <tr><td class="label">Speed</td><td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="speedctrl"></div></td><td class="readout" id="speedout"></td></tr>
 </table>
-<table class="wrap">
+<table class="wrap noprint">
 <tr><td>Edge Selection Weights</td></tr>
 <tr><td>
 <table class="weights">
