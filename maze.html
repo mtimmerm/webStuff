@@ -1,0 +1,513 @@
+<HEAD>
+<title>Weighted Randomized Kruskal Maze Generation</title>
+<meta name="copyright" content="Matthew Timmermans">
+<link rel="stylesheet" href="http://code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
+<script src="https://code.jquery.com/jquery-3.1.1.min.js"></script>
+<script src="https://code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
+<!--
+ Copyright 2017 Matthew Timmermans
+ 
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+ 
+     http://www.apache.org/licenses/LICENSE-2.0
+ 
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+<script>
+//slider values
+var rescontrol=15;
+var speedctrl=14;
+var PV11=1, PV12=2, PV13=5, PV22=10, PV23=15, PV33=17;
+
+var canvas;
+var ctx;
+var cwid;
+var chei;
+var wid;
+var hei;
+var wallwid;
+var ufarray;
+var wallstat;
+var weights;
+var wallqs;
+var wallsbynum;
+
+/*
+ * Get a random integer in [0,n)
+ */
+function randInt(n) {
+    return Math.floor(Math.random()*n);
+}
+
+/*
+ * Add an element to a randomly permuted array
+ */
+function pushrand(arr, item) {
+    if (arr.length<1) {
+        arr.push(item);
+        return;
+    }
+    var i = randInt(arr.length+1);
+    if (i >= arr.length) {
+        arr.push(item);
+    } else {
+        arr.push(arr[i]);
+        arr[i]=item;
+    }
+}
+
+/*
+ * Union-find implementation
+ * so we know when removing a wall will connect disconnected parts of the maze 
+ */
+
+function ufind(cell) {
+    while(ufarray.length<=cell) {
+        ufarray.push(-1);
+    }
+    var t, src=cell;
+    while( (t=ufarray[cell]) >= 0 ) {
+        cell = t;
+    }
+    while((t=ufarray[src])>=0 && t!=cell) {
+        ufarray[src] = cell;
+        src = t;
+    }
+    return cell;
+}
+
+function union(celli,cellj) {
+    var i = ufind(celli);
+    var j = ufind(cellj);
+    if (i!=j) {
+        if (ufarray[i]>=ufarray[j]) {
+            ufarray[j] += ufarray[i];
+            ufarray[i] = j;
+        } else {
+            ufarray[i] += ufarray[j];
+            ufarray[j] = i;
+        }
+        return true;
+    }
+    return false;
+}
+
+
+/*
+ * get a wall from its coordinates
+ */
+function getWall(x,y,dr) {
+    var ret = null;
+    if (x>=0 && x<wid && y>=0 && y<hei) {
+        ret = wallsbynum[(y*wid+x)*2+(dr?0:1)];
+    }
+    return ret;
+}
+
+/*
+ * Get a neighbour of a wall by number
+ */
+function getNeighbour(wall,n) {
+    if (wall.dr) {
+        switch(n) {
+            case 0: return getWall(wall.x,wall.y-1,false);
+            case 1: return getWall(wall.x,wall.y-1,true);
+            case 2: return getWall(wall.x+1,wall.y-1,false);
+            case 3: return getWall(wall.x,wall.y,false);
+            case 4: return getWall(wall.x,wall.y+1,true);
+            case 5: return getWall(wall.x+1,wall.y,false);
+        }
+    } else {
+        switch(n) {
+            case 0: return getWall(wall.x-1,wall.y,true);
+            case 1: return getWall(wall.x-1,wall.y,false);
+            case 2: return getWall(wall.x-1,wall.y+1,true);
+            case 3: return getWall(wall.x,wall.y,true);
+            case 4: return getWall(wall.x+1,wall.y,false);
+            case 5: return getWall(wall.x,wall.y+1,true);
+        }
+    }
+    return null;
+}
+
+/*
+ * Classify one end of a wall given its 3 neihbours
+ */
+function getWallEndType(w1,w2,w3) {
+    
+    if (w1 && w1.clr) {
+        if (w3 && w3.clr) {
+            return 2;
+        }
+        if (w2 && w2.clr) {
+            return 2;
+        }
+        return 1;
+    }
+    if (w3 && w3.clr) {
+        if (w2 && w2.clr) {
+            return 2;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Update the type of a wall after one of its neigbours is cleared
+ */
+function updateWallType(wall) {
+    var t1 = getWallEndType(getNeighbour(wall,0),getNeighbour(wall,1),getNeighbour(wall,2));
+    var t2 = getWallEndType(getNeighbour(wall,3),getNeighbour(wall,4),getNeighbour(wall,5));
+    var typ = t1*3+t2;
+    
+    //wall types can only increase when neighbour are cleared
+    if (typ>wall.typ) {
+        wall.typ=typ;
+        //put the wall at a random postion in its new queue.
+        //It would be expensive to remove it from the old queue, so we just leave it there.
+        //it will be ignored if its found to be in the wrong queue when its removed.
+        //The fact that wall.typ only increases means that no wall will be placed into the
+        //same queue twice, so our space requirments are controlled.
+        pushrand(wallqs[typ],wall);
+    }
+}
+
+/*
+ * Remove a wall if doing so connects disconnected parts of the maze
+ */
+function tryWall(wall) {
+    if (wall.clr) {
+        return false;
+    }
+    var c1 = wall.y*wid+wall.x;
+    var c2 = c1+(wall.dr?1:wid);
+    if (!union(c1,c2)) {
+        return false;
+    }
+    wall.clr = true;
+    fill(wall.x, wall.y, (wall.dr?1:0), (wall.dr?0:1), true);
+    for (var i=0; i<6; i++) {
+        var w = getNeighbour(wall,i);
+        if (w) {
+            updateWallType(w);
+        }
+    }
+    return true;
+}
+
+/*
+ * Fill a wall or cell in the canvas
+ */
+function fill(x, y, wx, wy, clr) {
+    wx += 1; wy += 1;
+    x += (wx>>1); wx &= 1;
+    y += (wy>>1); wy &= 1;
+    var ex, ey;
+    
+    if (wx) {
+        ex = Math.floor((x+1)*(cwid-wallwid)/wid);
+        x = Math.floor(x*(cwid-wallwid)/wid);
+        x += wallwid;
+    } else {
+        x = Math.floor(x*(cwid-wallwid)/wid);
+        ex = x+wallwid;
+    }
+    if (wy) {
+        ey = Math.floor((y+1)*(chei-wallwid)/hei);
+        y = Math.floor(y*(chei-wallwid)/hei);
+        y += wallwid;
+    } else {
+        y = Math.floor(y*(chei-wallwid)/hei);
+        ey = y+wallwid;
+    }
+    ctx.fillStyle = (clr?"white":"black");
+    ctx.fillRect(x, y, ex-x, ey-y);
+}
+
+
+//function to execute next timer tick
+var state;
+//we've done all we have to up to this time
+var doneTo;
+//the id of the pending timer, or null
+var timerId=null;
+
+/*
+ * Do some work.
+ */
+function step() {
+    var w=0,i,chunk;
+    
+    //select a queue randomly, weighted
+    for (i=0;i<9;i++) {
+        w+=wallqs[i].length*weights[i];
+    }
+    if (w<=0) {
+        //no more walls to check
+        return null;
+    }
+    w*=Math.random();
+    for(i=0;i<8;i++) {
+        chunk = wallqs[i].length*weights[i];
+        if (w<chunk) {
+            break;
+        }
+        w-=chunk;
+    }
+    
+    //pop a wall from the queue and try to remove it
+    var wall = wallqs[i].pop();
+    if (wall && wall.typ==i && tryWall(wall)) {
+        doneTo+=(20.0-speedctrl)*250.0/(wid*hei);
+    }
+    return step;
+}
+
+/*
+ * Iteration function, called every timer to do a bit of maze generation work
+ */
+function iterFunc()
+{
+    timerId=null;
+    var newt = (new Date()).getTime();
+    while(doneTo < newt) {
+        if (!state) {
+            return;
+        }
+        state=state();
+    }
+    if (state) {
+        timerId=setTimeout(iterFunc,50); //20 frames per second max
+    }
+}
+
+/*
+ * Set up and start a new maze generation
+ */
+function init() {
+    canvas = document.getElementById("canvas");
+    ctx = canvas.getContext("2d");
+    cwid=800;
+    chei=1000;
+    wid=Math.floor(cwid*rescontrol/100);
+    hei=Math.floor(chei*rescontrol/100);
+    wallwid=Math.floor(100/(rescontrol*3));
+    ufarray = [];
+    weights=[PV33,PV23,PV13, PV23,PV22,PV12, PV13,PV12,PV11];
+    for (var i=0;i<weights.length;i++) {
+    	weights[i]=	Math.pow(2.0,weights[i]*0.5);
+    }
+    wallqs=[[],[],[],[],[],[],[],[],[]];
+    wallsbynum=[];
+    ctx.fillStyle="black";
+    ctx.fillRect(0,0,cwid,chei);
+    fill(randInt(wid),0,0,-1,true);
+    fill(randInt(wid),hei-1,0,1,true);
+
+    var x,y,wall;
+    for (y=0;y<hei;++y) {
+        for(x=0;x<wid;++x) {
+            fill(x,y,0,0,true);
+            if (x<wid-1) {
+                wall={x:x,y:y,dr:true,typ:0,clr:false};
+                wallsbynum.push(wall);
+                pushrand(wallqs[0],wall);
+            } else {
+                wallsbynum.push(null);
+            }
+            if (y<hei-1) {
+                wall={x:x,y:y,dr:false,typ:0,clr:false};
+                wallsbynum.push(wall);
+                pushrand(wallqs[0],wall);
+            } else {
+                wallsbynum.push(null);
+            }
+        }
+    }
+    doneTo = (new Date()).getTime();
+    state=step;
+    if (!timerId) {
+        timerId=setTimeout(iterFunc,50);
+    }
+};
+</script>
+
+
+<style>
+    .slider {
+        width:400px;
+        margin-left:20px;
+        margin-right:20px;
+    }
+    table.wrap {
+    	margin-bottom: 16px;
+    }
+    .weights .slider {
+        width:200px;
+        margin-left:8px;
+        margin-right:8px;
+    }
+    .weights .readout {
+    	font-size:0.8em;
+    	font-family: monospace;
+    	margin-left:4px;
+    	padding-right: 10px;
+    	text-align: right;
+    }
+    .weights .label {
+        padding-left: 12px;
+    }
+    .weights td {
+    	padding: 4px 0;
+    }
+    .buttons {
+        vertical-align: middle;
+    }
+    .buttons .button {
+        padding: 4px 8px;
+        margin: 3px 0;
+        width: 100%;
+    }
+    span.L3 {
+    	display:inline-block;
+    	height:16px;
+    	width:8px;
+    	border-right: 2px solid black;
+    }
+    span.R3{
+    	display:inline-block;
+    	height:16px;
+    	width:8px;
+    	border-left: 2px solid black;
+    }
+    span.R2 {
+    	display:inline-block;
+    	height:7px;
+    	width:8px;
+    	border-left: 2px solid black;
+    	border-top: 2px solid black;
+    }
+    span.L2 {
+    	display:inline-block;
+    	height:7px;
+    	width:8px;
+    	border-right: 2px solid black;
+    	border-top: 2px solid black;
+    }
+    span.L1 {
+    	display:inline-block;
+    	height:7px;
+    	width:10px;
+    	border-top: 2px solid black;
+    }
+    span.H {
+    	display:inline-block;
+    	height:7px;
+    	width:10px;
+    	border-top: 2px solid #CCC;
+    }
+</style>
+</HEAD>
+<BODY>
+<table class="wrap">
+<tr><td class="label">Resolution</td><td class="ctrl"><div class="slider" data-min="1" data-max="20" data-var="rescontrol"></div></td><td id="resout" class="readout"></td></tr>
+<tr><td class="label">Speed</td><td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="speedctrl"></div></td><td class="readout" id="speedout"></td></tr>
+</table>
+<table class="wrap">
+<tr><td>Edge Selection Weights</td></tr>
+<tr><td>
+<table class="weights">
+<tr>
+	<td class="label"><span class="L3"></span><span class="H"></span><span class="R3"></span></td>
+	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV33"></div></td>
+	<td class="readout" data-var="PV33"></td>
+	<td class="label"><span class="L3"></span><span class="H"></span><span class="R2"></span></td>
+	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV23"></div></td>
+	<td class="readout" data-var="PV23"></td>
+</tr>
+<tr>
+	<td class="label"><span class="L2"></span><span class="H"></span><span class="R2"></span></td>
+	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV22"></div></td>
+	<td class="readout" data-var="PV22"></td>
+	<td class="label"><span class="L3"></span><span class="H"></span><span class="L1"></span></td>
+	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV13"></div></td>
+	<td class="readout" data-var="PV13"></td>
+</tr>
+<tr>
+	<td class="label"><span class="L2"></span><span class="H"></span><span class="L1"></td>
+	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV12"></div></td>
+	<td class="readout" data-var="PV12"></td>
+	<td class="label"><span class="L1"></span><span class="H"></span><span class="L1"></td>
+	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV11"></div></td>
+	<td class="readout" data-var="PV11"></td>
+</tr>
+</table>
+</td><td class="buttons">
+<input type="button" class="button" value="New Maze" onclick="init();"><BR>
+<input type="button" class="button" value="Randomize" onclick="randomize();">
+</td></tr></table>
+<canvas width="800" height="1000" id="canvas"></canvas>
+
+<script>
+$(".slider").each(function(){
+    var el=$(this);
+    var varname=el.attr("data-var");
+    el.slider({
+        min: Number(el.attr("data-min")),
+        max: Number(el.attr("data-max")),
+        value: window[varname],
+        change: function() {setVar(varname,el.slider("value"));},
+        slide: function(ev,ui) {setVar(varname,ui.value);}
+    });
+});
+
+$(".buttons .button").each(function(){
+    var el=$(this);
+    el.button({
+    });
+});
+
+var noredraw = false;
+function setVar(name, val) {
+	val = Number(val);
+	if (window[name]!=val) {
+	    window[name]=val;
+	    if (name==='speedctrl') {
+		    $("#speedout").text(""+(20-speedctrl)/2+" secs");
+	    } else if (!noredraw) {
+	    	redraw();
+	    }
+	}
+}
+
+function redraw() {
+    $(".readout").each(function(){
+    	var name = this.getAttribute("data-var");
+    	if (name) {
+    		$(this).text(String(window[name]));
+    	}
+    });
+    $("#speedout").text(""+(20-speedctrl)/2+" secs");
+    init();
+    $("#resout").text(""+wid+"x"+hei);
+}
+
+function randomize() {
+    noredraw=true;
+    $(".weights .slider").each(function(){
+        $(this).slider("value", randInt(20));
+    });
+    noredraw=false;
+    redraw() 
+}
+redraw();
+</script>
+</BODY>
+</HTML>
