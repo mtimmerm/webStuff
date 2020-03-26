@@ -1,30 +1,32 @@
+
 <HTML>
 <HEAD>
 <title>Weighted Randomized Kruskal Maze Generation</title>
 <meta name="copyright" content="Matthew Timmermans">
-<link rel="stylesheet" href="//code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
-<script src="//code.jquery.com/jquery-3.1.1.min.js"></script>
-<script src="//code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
+<link rel="stylesheet" href="https://code.jquery.com/ui/1.12.1/themes/base/jquery-ui.css">
+<script src="https://code.jquery.com/jquery-3.1.1.min.js"></script>
+<script src="https://code.jquery.com/ui/1.12.1/jquery-ui.js"></script>
 <!--
- Copyright 2017 Matthew Timmermans
- 
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
- 
-     http://www.apache.org/licenses/LICENSE-2.0
- 
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
+    Copyright 2017 Matthew Timmermans
+    
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+    
+        http://www.apache.org/licenses/LICENSE-2.0
+    
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
 -->
 <script>
 //slider values
 var rescontrol=15;
 var speedctrl=14;
 var PV11=1, PV12=2, PV13=5, PV22=10, PV23=15, PV33=17;
+var PATHCOLOR="#2ECC00"
 
 var canvas;
 var ctx;
@@ -38,6 +40,13 @@ var wallstat;
 var weights;
 var wallqs;
 var wallsbynum;
+var startx;
+var finishx;
+
+var solutionState;
+var solutionLevel;
+var solutionDepth;
+
 
 /*
  * Get a random integer in [0,n)
@@ -193,7 +202,7 @@ function tryWall(wall) {
         return false;
     }
     wall.clr = true;
-    fill(wall.x, wall.y, (wall.dr?1:0), (wall.dr?0:1), true);
+    fill(wall.x, wall.y, (wall.dr?1:0), (wall.dr?0:1), "white");
     for (var i=0; i<6; i++) {
         var w = getNeighbour(wall,i);
         if (w) {
@@ -228,7 +237,7 @@ function fill(x, y, wx, wy, clr) {
         y = Math.floor(y*(chei-wallwid)/hei);
         ey = y+wallwid;
     }
-    ctx.fillStyle = (clr?"white":"black");
+    ctx.fillStyle = clr;
     ctx.fillRect(x, y, ex-x, ey-y);
 }
 
@@ -241,7 +250,7 @@ var doneTo;
 var timerId=null;
 
 /*
- * Do some work.
+ * Do maze generation some work.
  */
 function step() {
     var w=0,i,chunk;
@@ -252,6 +261,7 @@ function step() {
     }
     if (w<=0) {
         //no more walls to check
+        $(".buttons .solveButton").button({disabled: false});
         return null;
     }
     w*=Math.random();
@@ -269,6 +279,57 @@ function step() {
         doneTo+=(20.0-speedctrl)*250.0/(wid*hei);
     }
     return step;
+}
+
+/*
+ * Do some maze solution work
+ */
+function solutionStep() {
+    ++solutionDepth;
+    var clr = ["#FFFFD0","#FFFFB0","#FFFF90","#FFFF70","#FFFF50","#FFFF30","#FFFF10"][solutionDepth%7];
+    var oldLevel = solutionLevel;
+    solutionLevel=[];
+    var walldiff=[-wid*2+1,0,-2,1];
+    for (var i=0; i<oldLevel.length; ++i) {
+        var pos = oldLevel[i];
+        var cx = pos[0];
+        var cy = pos[1];
+        var wallr=(cy*wid+cx)*2;
+        for (var n=0;n<4;n++) {
+            var ty = cy-1+(n>=2 ? n-1:n);
+            var tx = cx + (n&1) - ((n>>1)&1);
+            if (tx >= 0 && tx < wid && ty >=0 && ty < hei && !solutionState[ty][tx] &&
+                wallsbynum[wallr+walldiff[n]].clr) {
+                solutionLevel.push([tx,ty]);
+                solutionState[ty][tx] = solutionDepth;
+                fill(tx, ty, 0, 0, clr);
+            }
+        }
+    }
+    doneTo+=(solutionLevel.length+5)*(20.0-speedctrl)*250.0/(wid*hei);
+    if (!solutionState[hei-1][finishx]) {
+        return (solutionLevel.length ? solutionStep : null);
+    }
+    var x = finishx;
+    var y = hei-1;
+    var again = true;
+    while(again) {
+        again = false;
+        fill(x,y,0,0,PATHCOLOR);
+        var d = solutionState[y][x];
+        var wallr=(y*wid+x)*2;
+        for (var n=0;n<4;n++) {
+            var ty = y-1+(n>=2 ? n-1:n);
+            var tx = x + (n&1) - ((n>>1)&1);
+            if (tx >= 0 && tx < wid && ty >=0 && ty < hei && solutionState[ty][tx]<d &&
+                wallsbynum[wallr+walldiff[n]].clr) {
+                x=tx;
+                y=ty;
+                again = true;
+                break;
+            }
+        }
+    }
 }
 
 /*
@@ -293,6 +354,8 @@ function iterFunc()
  * Set up and start a new maze generation
  */
 function init() {
+    solutionState = solutionLevel = solutionDepth = null;
+
     canvas = document.getElementById("canvas");
     ctx = canvas.getContext("2d");
     cwid=800;
@@ -303,19 +366,21 @@ function init() {
     ufarray = [];
     weights=[PV33,PV23,PV13, PV23,PV22,PV12, PV13,PV12,PV11];
     for (var i=0;i<weights.length;i++) {
-    	weights[i]=	Math.pow(2.0,weights[i]*0.5);
+        weights[i]=	Math.pow(2.0,weights[i]*0.5);
     }
     wallqs=[[],[],[],[],[],[],[],[],[]];
     wallsbynum=[];
     ctx.fillStyle="black";
     ctx.fillRect(0,0,cwid,chei);
-    fill(randInt(wid),0,0,-1,true);
-    fill(randInt(wid),hei-1,0,1,true);
+    startx = randInt(wid);
+    finishx = randInt(wid);
+    fill(startx,0,0,-1,"white");
+    fill(finishx,hei-1,0,1,"white");
 
     var x,y,wall;
     for (y=0;y<hei;++y) {
         for(x=0;x<wid;++x) {
-            fill(x,y,0,0,true);
+            fill(x,y,0,0,"white");
             if (x<wid-1) {
                 wall={x:x,y:y,dr:true,typ:0,clr:false};
                 wallsbynum.push(wall);
@@ -338,6 +403,39 @@ function init() {
         timerId=setTimeout(iterFunc,50);
     }
 };
+
+/*
+ * Set up and start a new maze solution
+ */
+function initSolution() {
+    if (solutionState) {
+        for (y=0;y<hei;++y) {
+            for(x=0;x<wid;++x) {
+                if (solutionState[y][x]) {
+                    fill(x, y, 0, 0, "white");
+                }
+            }
+        }
+    }
+    solutionState=[];
+    for (y=0;y<hei;++y) {
+        solutionState.push([]);
+        for(x=0;x<wid;++x) {
+            solutionState[y].push[0];
+        }
+    }
+    solutionLevel=[[startx,0]];
+    solutionState[0][startx]=1;
+    fill(startx, 0, 0, 0, PATHCOLOR);
+    solutionDepth=1;
+
+    doneTo = (new Date()).getTime();
+    state=solutionStep;
+    if (!timerId) {
+        timerId=setTimeout(iterFunc,50);
+    }
+};
+
 </script>
 
 
@@ -348,7 +446,7 @@ function init() {
         margin-right:20px;
     }
     table.wrap {
-    	margin-bottom: 16px;
+        margin-bottom: 16px;
     }
     .weights .slider {
         width:200px;
@@ -356,17 +454,17 @@ function init() {
         margin-right:8px;
     }
     .weights .readout {
-    	font-size:0.8em;
-    	font-family: monospace;
-    	margin-left:4px;
-    	padding-right: 10px;
-    	text-align: right;
+        font-size:0.8em;
+        font-family: monospace;
+        margin-left:4px;
+        padding-right: 10px;
+        text-align: right;
     }
     .weights .label {
         padding-left: 12px;
     }
     .weights td {
-    	padding: 4px 0;
+        padding: 4px 0;
     }
     .buttons {
         vertical-align: middle;
@@ -376,43 +474,48 @@ function init() {
         margin: 3px 0;
         width: 100%;
     }
+    .buttons .solveButton {
+        padding: 8px 8px;
+        margin: 0 12px;
+        width: 100%;
+    }
     span.L3 {
-    	display:inline-block;
-    	height:16px;
-    	width:8px;
-    	border-right: 2px solid black;
+        display:inline-block;
+        height:16px;
+        width:8px;
+        border-right: 2px solid black;
     }
     span.R3{
-    	display:inline-block;
-    	height:16px;
-    	width:8px;
-    	border-left: 2px solid black;
+        display:inline-block;
+        height:16px;
+        width:8px;
+        border-left: 2px solid black;
     }
     span.R2 {
-    	display:inline-block;
-    	height:7px;
-    	width:8px;
-    	border-left: 2px solid black;
-    	border-top: 2px solid black;
+        display:inline-block;
+        height:7px;
+        width:8px;
+        border-left: 2px solid black;
+        border-top: 2px solid black;
     }
     span.L2 {
-    	display:inline-block;
-    	height:7px;
-    	width:8px;
-    	border-right: 2px solid black;
-    	border-top: 2px solid black;
+        display:inline-block;
+        height:7px;
+        width:8px;
+        border-right: 2px solid black;
+        border-top: 2px solid black;
     }
     span.L1 {
-    	display:inline-block;
-    	height:7px;
-    	width:10px;
-    	border-top: 2px solid black;
+        display:inline-block;
+        height:7px;
+        width:10px;
+        border-top: 2px solid black;
     }
     span.H {
-    	display:inline-block;
-    	height:7px;
-    	width:10px;
-    	border-top: 2px solid #CCC;
+        display:inline-block;
+        height:7px;
+        width:10px;
+        border-top: 2px solid #CCC;
     }
     @media print {
         .noprint {display: none;}
@@ -429,33 +532,35 @@ function init() {
 <tr><td>
 <table class="weights">
 <tr>
-	<td class="label"><span class="L3"></span><span class="H"></span><span class="R3"></span></td>
-	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV33"></div></td>
-	<td class="readout" data-var="PV33"></td>
-	<td class="label"><span class="L3"></span><span class="H"></span><span class="R2"></span></td>
-	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV23"></div></td>
-	<td class="readout" data-var="PV23"></td>
+    <td class="label"><span class="L3"></span><span class="H"></span><span class="R3"></span></td>
+    <td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV33"></div></td>
+    <td class="readout" data-var="PV33"></td>
+    <td class="label"><span class="L3"></span><span class="H"></span><span class="R2"></span></td>
+    <td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV23"></div></td>
+    <td class="readout" data-var="PV23"></td>
 </tr>
 <tr>
-	<td class="label"><span class="L2"></span><span class="H"></span><span class="R2"></span></td>
-	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV22"></div></td>
-	<td class="readout" data-var="PV22"></td>
-	<td class="label"><span class="L3"></span><span class="H"></span><span class="L1"></span></td>
-	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV13"></div></td>
-	<td class="readout" data-var="PV13"></td>
+    <td class="label"><span class="L2"></span><span class="H"></span><span class="R2"></span></td>
+    <td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV22"></div></td>
+    <td class="readout" data-var="PV22"></td>
+    <td class="label"><span class="L3"></span><span class="H"></span><span class="L1"></span></td>
+    <td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV13"></div></td>
+    <td class="readout" data-var="PV13"></td>
 </tr>
 <tr>
-	<td class="label"><span class="L2"></span><span class="H"></span><span class="L1"></td>
-	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV12"></div></td>
-	<td class="readout" data-var="PV12"></td>
-	<td class="label"><span class="L1"></span><span class="H"></span><span class="L1"></td>
-	<td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV11"></div></td>
-	<td class="readout" data-var="PV11"></td>
+    <td class="label"><span class="L2"></span><span class="H"></span><span class="L1"></td>
+    <td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV12"></div></td>
+    <td class="readout" data-var="PV12"></td>
+    <td class="label"><span class="L1"></span><span class="H"></span><span class="L1"></td>
+    <td class="ctrl"><div class="slider" data-min="0" data-max="20" data-var="PV11"></div></td>
+    <td class="readout" data-var="PV11"></td>
 </tr>
 </table>
 </td><td class="buttons">
 <input type="button" class="button" value="New Maze" onclick="init();"><BR>
 <input type="button" class="button" value="Randomize" onclick="randomize();">
+</td><td class="buttons">
+<input type="button" class="solveButton" value="Solve" onclick="initSolution();">
 </td></tr></table>
 <canvas width="800" height="1000" id="canvas"></canvas>
 
@@ -478,27 +583,33 @@ $(".buttons .button").each(function(){
     });
 });
 
+$(".buttons .solveButton").each(function(){
+    var el=$(this);
+    el.button({disabled: true});
+});
+
 var noredraw = false;
 function setVar(name, val) {
-	val = Number(val);
-	if (window[name]!=val) {
-	    window[name]=val;
-	    if (name==='speedctrl') {
-		    $("#speedout").text(""+(20-speedctrl)/2+" secs");
-	    } else if (!noredraw) {
-	    	redraw();
-	    }
-	}
+    val = Number(val);
+    if (window[name]!=val) {
+        window[name]=val;
+        if (name==='speedctrl') {
+            $("#speedout").text(""+(20-speedctrl)/2+" secs");
+        } else if (!noredraw) {
+            redraw();
+        }
+    }
 }
 
 function redraw() {
     $(".readout").each(function(){
-    	var name = this.getAttribute("data-var");
-    	if (name) {
-    		$(this).text(String(window[name]));
-    	}
+        var name = this.getAttribute("data-var");
+        if (name) {
+            $(this).text(String(window[name]));
+        }
     });
     $("#speedout").text(""+(20-speedctrl)/2+" secs");
+    $(".buttons .solveButton").button({disabled: true});
     init();
     $("#resout").text(""+wid+"x"+hei);
 }
