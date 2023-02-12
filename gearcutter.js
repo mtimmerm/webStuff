@@ -1085,7 +1085,7 @@
             this.maxx = Math.max(this.maxx, cx + r);
           }
         }
-        this.buf.push(`A ${r} ${r} ${0} ${0} ${side} ${x} ${y}`);
+        this.buf.push(` A ${r} ${r} ${0} ${0} ${side} ${x} ${y}`);
       }
       this.lastx = x;
       this.lasty = y;
@@ -1302,7 +1302,8 @@
     svg.drawCircle(
       {
         stroke: "blue",
-        strokeWidth: 0.01
+        strokeWidth: 0.01,
+        fill: "none"
       },
       0,
       0,
@@ -1311,7 +1312,8 @@
     svg.draw(
       {
         stroke: "black",
-        strokeWidth: 0.01
+        strokeWidth: 0.01,
+        fill: "none"
       },
       (pen, domove) => {
         for (let i = 0; i < nTeeth; ++i) {
