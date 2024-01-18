@@ -4515,7 +4515,7 @@ AcDbSpline
         }
       }
     );
-    const blob = new Blob([dxf.getDxfText()], { type: "image/svg+xml" });
+    const blob = new Blob([dxf.getDxfText()], { type: "image/vnd.dxf" });
     return URL.createObjectURL(blob);
   }
   function setNumber(id, val) {
