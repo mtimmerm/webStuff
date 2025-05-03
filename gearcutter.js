@@ -655,45 +655,251 @@
     return ret;
   }
 
+  // src/arcUtils.ts
+  function angleFromTo(fromx, fromy, tox, toy) {
+    return Math.atan2(fromx * toy - fromy * tox, fromx * tox + fromy * toy);
+  }
+  function radiusFromDistance(distance, turn) {
+    return distance * 0.5 / Math.sin(turn * 0.5);
+  }
+  function centerDistanceFactor(turn) {
+    return 0.5 / Math.tan(turn * 0.5);
+  }
+  function bulgeFactor(turn) {
+    return Math.tan(turn * 0.25) * -0.5;
+  }
+  function pointFromCrossFactor(x1, y1, x2, y2, cfac) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    return [x1 + dx * 0.5 - dy * cfac, y1 + dy * 0.5 + dx * cfac];
+  }
+  function pointFromForwardAndCrossFactors(x1, y1, x2, y2, ffac, cfac) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    return [x1 + dx * ffac - dy * cfac, y1 + dy * ffac + dx * cfac];
+  }
+  function arcCenter(x1, y1, x2, y2, turn) {
+    return pointFromCrossFactor(x1, y1, x2, y2, centerDistanceFactor(turn));
+  }
+  function versine(theta) {
+    let x = Math.sin(theta * 0.5);
+    return 2 * x * x;
+  }
+  function interpolateArcTurn(x1, y1, x2, y2, turn, target_turn) {
+    const halfturn = turn * 0.5;
+    const endy = Math.sin(halfturn);
+    const endx = -versine(halfturn);
+    const midy = Math.sin(target_turn - halfturn);
+    const midx = -versine(target_turn - halfturn);
+    const scale = 0.5 / endy;
+    const ffac = midy * scale;
+    const cfac = (midx - endx) * scale;
+    return pointFromForwardAndCrossFactors(x1, y1, x2, y2, ffac, cfac);
+  }
+
+  // src/ClippingPen.ts
+  var CrappyClippingPen = class {
+    constructor(target, nx, ny, minprod) {
+      this.tx = 0;
+      this.ty = 0;
+      this.havePoint = false;
+      this.isInside = false;
+      this.target = target;
+      const mag = Math.sqrt(nx * nx + ny * ny);
+      this.nx = nx / mag;
+      this.ny = ny / mag;
+      this.minprod = minprod / mag;
+      if (target.reset) {
+        this.reset = () => {
+          target.reset();
+          this.tx = 0;
+          this.ty = 0;
+          this.havePoint = false;
+          this.isInside = false;
+        };
+      }
+    }
+    moveTo(x, y) {
+      this.tx = x;
+      this.ty = y;
+      this.havePoint = true;
+      this.isInside = x * this.nx + y * this.ny > this.minprod;
+      if (this.isInside) {
+        this.target.moveTo(x, y);
+      }
+    }
+    arcTo(x, y, turn) {
+      if (!this.havePoint) {
+        this.moveTo(x, y);
+        return;
+      }
+      const wasInside = this.isInside;
+      if (wasInside) {
+        this.isInside = x * this.nx + y * this.ny >= this.minprod;
+      } else {
+        this.isInside = x * this.nx + y * this.ny > this.minprod;
+      }
+      if (!wasInside === !this.isInside) {
+        this.tx = x;
+        this.ty = y;
+        if (wasInside) {
+          this.target.arcTo(x, y, turn);
+        }
+        return;
+      }
+      if (turn < 1e-6) {
+        const p0 = this.tx * this.nx + this.ty * this.ny;
+        const p1 = x * this.nx + y * this.ny;
+        const t = (this.minprod - p0) / (p1 - p0);
+        const mx = this.tx + (x - this.tx) * t;
+        const my = this.ty + (y - this.ty) * t;
+        if (this.isInside) {
+          this.target.moveTo(mx, my);
+          if (x != mx || y != my) {
+            this.target.arcTo(x, y, 0);
+          }
+        } else {
+          if (mx != this.tx || my != this.ty) {
+            this.target.arcTo(mx, my, 0);
+          }
+        }
+      } else if (this.isInside) {
+        const midturn = searchForFloat(0, turn, (t) => {
+          const [mx2, my2] = interpolateArcTurn(this.tx, this.ty, x, y, turn, t);
+          return mx2 * this.nx + my2 * this.ny < this.minprod;
+        })[1];
+        const [mx, my] = interpolateArcTurn(this.tx, this.ty, x, y, turn, midturn);
+        this.target.moveTo(mx, my);
+        if (x != mx || y != my) {
+          this.target.arcTo(x, y, turn - midturn);
+        }
+      } else {
+        const midTurn = searchForFloat(0, turn, (t) => {
+          const [mx2, my2] = interpolateArcTurn(this.tx, this.ty, x, y, turn, t);
+          return mx2 * this.nx + my2 * this.ny >= this.minprod;
+        })[0];
+        const [mx, my] = interpolateArcTurn(this.tx, this.ty, x, y, turn, midTurn);
+        if (mx != this.tx || my != this.ty) {
+          this.target.arcTo(mx, my, midTurn);
+        }
+      }
+      this.tx = x;
+      this.ty = y;
+    }
+  };
+
+  // src/RecordingPen.ts
+  var RecordingPen = class {
+    constructor() {
+      this.xs = [];
+      this.ys = [];
+      this.turns = [];
+      this.path = (pen, doMove) => {
+        const { xs, ys, turns } = this;
+        let i = 0;
+        if (!doMove) {
+          while (i < turns.length && turns[i] == null) {
+            ++i;
+          }
+        }
+        for (; i < turns.length; ++i) {
+          const x = xs[i];
+          const y = ys[i];
+          const a = turns[i];
+          if (a == null) {
+            pen.moveTo(x, y);
+          } else {
+            pen.arcTo(x, y, a);
+          }
+        }
+      };
+      this.reversedPath = (pen, doMove) => {
+        const { xs, ys, turns } = this;
+        let i = turns.length;
+        if (!doMove) {
+          while (i >= 0 && (i >= turns.length || turns[i] == null)) {
+            --i;
+          }
+        }
+        for (; i > 0; --i) {
+          const x = xs[i - 1];
+          const y = ys[i - 1];
+          const a = i >= turns.length ? null : turns[i];
+          if (a == null) {
+            pen.moveTo(x, y);
+          } else {
+            pen.arcTo(x, y, -a);
+          }
+        }
+      };
+    }
+    reset() {
+      this.xs.length = 0;
+      this.ys.length = 0;
+      this.turns.length = 0;
+    }
+    moveTo(x, y) {
+      if (this.turns.length && this.turns[this.turns.length - 1] == null) {
+        this.turns.pop();
+        this.xs.pop();
+        this.ys.pop();
+      }
+      this.xs.push(x);
+      this.ys.push(y);
+      this.turns.push(null);
+    }
+    arcTo(x, y, turn) {
+      if (!this.turns.length) {
+        throw new Error("arc without preceding move in RecordingPen");
+      } else {
+        const i = this.turns.length - 1;
+        const dx = x - this.xs[i];
+        const dy = y - this.ys[i];
+        const mag2 = dx * dx + dy * dy;
+        if (mag2 < 1e-14) {
+          return;
+        }
+        if (mag2 < 1e-8) {
+          turn = 0;
+        }
+      }
+      this.xs.push(x);
+      this.ys.push(y);
+      this.turns.push(turn);
+    }
+    countSegments() {
+      let ret = 0;
+      for (const t of this.turns) {
+        if (t != null) {
+          ++ret;
+        }
+      }
+      return ret;
+    }
+  };
+
   // src/XFormPen.ts
-  var XFormPen = class {
-    constructor(delegate) {
-      this.delegate = delegate;
+  var XForm = class {
+    constructor() {
+      this.prevTransform = void 0;
       this.rotDegrees = 0;
       this.flipYinFac = 1;
       this.scaleFactor = 1;
-      this.xx = 1;
-      this.xy = 0;
       this.tx = 0;
       this.ty = 0;
     }
     rotate(degrees) {
       this.rotDegrees += degrees * this.flipYinFac;
       this.rotDegrees -= Math.floor(this.rotDegrees / 360) * 360;
-      this.xx = Math.cos(this.rotDegrees * Math.PI / 180);
-      this.xy = Math.sin(this.rotDegrees * Math.PI / 180);
-      const quarters = this.rotDegrees / 90;
-      if (Math.floor(quarters) === quarters) {
-        if ((quarters & 1) == 0) {
-          this.xx = Math.sign(this.xx);
-          this.xy = 0;
-        } else {
-          this.xx = 0;
-          this.xy = Math.sign(this.xy);
-        }
-      }
-      this.xx *= this.scaleFactor;
-      this.xy *= this.scaleFactor;
+      this.xProjection = void 0;
       return this;
     }
-    transformPoint(x, y) {
-      return [
-        this.tx + x * this.xx - y * this.flipYinFac * this.xy,
-        this.ty + x * this.xy + y * this.flipYinFac * this.xx
-      ];
-    }
     translate(x, y) {
-      [this.tx, this.ty] = this.transformPoint(x, y);
+      const [xx, xy] = this.getXProjection();
+      const tx = this.tx;
+      const ty = this.ty;
+      this.tx = tx + x * xx - y * this.flipYinFac * xy;
+      this.ty = ty + x * xy + y * this.flipYinFac * xx;
       return this;
     }
     scale(fac, flipY) {
@@ -706,12 +912,98 @@
       if (flipY) {
         this.flipYinFac = -this.flipYinFac;
       }
-      this.xx = Math.cos(this.rotDegrees * Math.PI / 180) * this.scaleFactor;
-      this.xy = Math.sin(this.rotDegrees * Math.PI / 180) * this.scaleFactor;
       return this;
     }
-    copy() {
-      return new XFormPen(this.delegate).translate(this.tx, this.ty).rotate(this.rotDegrees).scale(this.scaleFactor, this.flipYinFac < 0);
+    clip(nx, ny, minprod) {
+      this.processInput((pen) => new CrappyClippingPen(pen, nx, ny, minprod));
+      return this;
+    }
+    processInput(preprocess) {
+      if (this.rotDegrees == 0 && this.flipYinFac == 1 && this.scaleFactor == 1 && this.tx == 0 && this.ty == 0) {
+        if (this.prevTransform) {
+          const p1 = this.prevTransform;
+          const p2 = preprocess;
+          this.prevTransform = (pen) => p2(p1(pen));
+        } else {
+          this.prevTransform = preprocess;
+        }
+      } else {
+        const prevX = new XForm();
+        if (this.prevTransform) {
+          prevX.processInput(this.prevTransform);
+        }
+        prevX.translate(this.tx, this.ty);
+        prevX.rotate(this.rotDegrees);
+        prevX.scale(this.scaleFactor, this.flipYinFac != 1);
+        const p2 = preprocess;
+        this.prevTransform = (pen) => p2(prevX.apply(pen));
+        this.rotDegrees = 0;
+        this.flipYinFac = 1;
+        this.scaleFactor = 1;
+        this.tx = 0;
+        this.ty = 0;
+      }
+      return this;
+    }
+    xformInput(xform) {
+      if (xform.prevTransform) {
+        this.processInput(xform.prevTransform);
+      }
+      this.translate(xform.tx, xform.ty);
+      this.rotate(xform.rotDegrees);
+      this.scale(xform.scaleFactor, xform.flipYinFac < 0);
+      return this;
+    }
+    transformPath(path) {
+      const rec = new RecordingPen();
+      path(this.apply(rec), true);
+      return rec;
+    }
+    processPath(pen, path, doMove) {
+      path(this.apply(pen), doMove);
+      return this;
+    }
+    apply(target) {
+      const [xx, xy] = this.getXProjection();
+      const tx = this.tx;
+      const ty = this.ty;
+      const flipYinFac = this.flipYinFac;
+      const transformPoint = (x, y) => [
+        tx + x * xx - y * flipYinFac * xy,
+        ty + x * xy + y * flipYinFac * xx
+      ];
+      const transformTurn = (turn) => turn * flipYinFac;
+      if (this.prevTransform) {
+        target = this.prevTransform(target);
+      }
+      return new XFormPen(target, transformPoint, transformTurn);
+    }
+    getXProjection() {
+      let xx = Math.cos(this.rotDegrees * Math.PI / 180);
+      let xy = Math.sin(this.rotDegrees * Math.PI / 180);
+      const quarters = this.rotDegrees / 90;
+      if (Math.floor(quarters) === quarters) {
+        if ((quarters & 1) == 0) {
+          xx = Math.sign(xx);
+          xy = 0;
+        } else {
+          xx = 0;
+          xy = Math.sign(xy);
+        }
+      }
+      xx *= this.scaleFactor;
+      xy *= this.scaleFactor;
+      return [xx, xy];
+    }
+  };
+  var XFormPen = class {
+    constructor(delegate, transformPoint, transformTurn) {
+      this.transformPoint = transformPoint;
+      this.transformTurn = transformTurn;
+      this.delegate = delegate;
+      if (delegate.reset) {
+        this.reset = delegate.reset.bind(delegate);
+      }
     }
     moveTo(x, y) {
       const [newX, newY] = this.transformPoint(x, y);
@@ -719,7 +1011,7 @@
     }
     arcTo(x, y, leftTurnRadians) {
       const [newX, newY] = this.transformPoint(x, y);
-      this.delegate.arcTo(newX, newY, leftTurnRadians * this.flipYinFac);
+      this.delegate.arcTo(newX, newY, this.transformTurn(leftTurnRadians));
     }
   };
 
@@ -741,7 +1033,7 @@
       const segments = normalizePolarCutPath(this.path, this.dadTooth);
       for (const seg of segments) {
         const [sa, ea, c, rot] = seg;
-        const xpen = new XFormPen(pen).rotate(rot * 360 / this.nTeeth);
+        const xpen = new XForm().rotate(rot * 360 / this.nTeeth).apply(pen);
         c.drawSegment(xpen, (sa - rot) * this.dadTooth, (ea - rot) * this.dadTooth, doInitialMove);
         doInitialMove = false;
       }
@@ -870,72 +1162,6 @@
     };
   }
 
-  // src/RecordingPen.ts
-  var RecordingPen = class {
-    constructor() {
-      this.xs = [];
-      this.ys = [];
-      this.turns = [];
-      this.path = (pen, doMove) => {
-        const { xs, ys, turns } = this;
-        let i = 0;
-        if (!doMove) {
-          while (i < turns.length && turns[i] == null) {
-            ++i;
-          }
-        }
-        for (; i < turns.length; ++i) {
-          const x = xs[i];
-          const y = ys[i];
-          const a = turns[i];
-          if (a == null) {
-            pen.moveTo(x, y);
-          } else {
-            pen.arcTo(x, y, a);
-          }
-        }
-      };
-    }
-    moveTo(x, y) {
-      if (this.turns.length && this.turns[this.turns.length - 1] == null) {
-        this.turns.pop();
-        this.xs.pop();
-        this.ys.pop();
-      }
-      this.xs.push(x);
-      this.ys.push(y);
-      this.turns.push(null);
-    }
-    arcTo(x, y, turn) {
-      if (!this.turns.length) {
-        throw new Error("arc without preceding move in RecordingPen");
-      } else {
-        const i = this.turns.length - 1;
-        const dx = x - this.xs[i];
-        const dy = y - this.ys[i];
-        const mag2 = dx * dx + dy * dy;
-        if (mag2 < 1e-14) {
-          return;
-        }
-        if (mag2 < 1e-8) {
-          turn = 0;
-        }
-      }
-      this.xs.push(x);
-      this.ys.push(y);
-      this.turns.push(turn);
-    }
-    countSegments() {
-      let ret = 0;
-      for (const t of this.turns) {
-        if (t != null) {
-          ++ret;
-        }
-      }
-      return ret;
-    }
-  };
-
   // src/svg.ts
   var SvgRecorder = class {
     constructor(props) {
@@ -982,8 +1208,7 @@
         }),
         this.buf
       );
-      const xfpen = new XFormPen(pen);
-      xfpen.scale(Math.abs(this.scale), this.scale < 0);
+      const xfpen = new XForm().scale(Math.abs(this.scale), this.scale < 0).apply(pen);
       path(xfpen, true);
       this.mergeBounds(pen.finish());
     }
@@ -1065,10 +1290,8 @@
         const dx = x - this.lastx;
         const dy = y - this.lasty;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const a = Math.abs(turn * 0.5);
-        const sina = Math.sin(a);
-        const r = dist * 0.5 / sina;
-        const tanfac = (turn >= 0 ? 0.5 : -0.5) / Math.tan(a);
+        const r = Math.abs(radiusFromDistance(dist, turn));
+        const tanfac = centerDistanceFactor(turn);
         const cx = x - dx * 0.5 - dy * tanfac;
         const cy = y - dy * 0.5 + dx * tanfac;
         if (cx > Math.min(this.lastx, x) && cx < Math.max(this.lastx, x)) {
@@ -1427,6 +1650,260 @@ CIRCLE
     }
   };
 
+  // src/InitialMaxFilletPen.ts
+  var InitialMaxFilletPen = class {
+    constructor(target) {
+      this.haveStart = false;
+      this.haveArcs = false;
+      this.isDone = false;
+      this.qualified = false;
+      this.snx = 0;
+      this.sny = 0;
+      this.tx = 0;
+      this.ty = 0;
+      this.tdir = 0;
+      this.outFromStartDir = 0;
+      this.startDirection = 0;
+      this.target = target;
+      if (!target.reset) {
+        throw new Error("InitialMaxFilletPen requires a resettable pen");
+      }
+    }
+    reset() {
+      this.target.reset();
+      this.haveStart = false;
+      this.haveArcs = false;
+      this.isDone = false;
+      this.qualified = false;
+    }
+    moveTo(x, y) {
+      if (this.haveArcs) {
+        this.isDone = true;
+      } else {
+        this.setStart(x, y);
+      }
+      this.target.moveTo(x, y);
+    }
+    setStart(x, y) {
+      this.haveStart = true;
+      this.tx = x;
+      this.ty = y;
+      const mag = Math.sqrt(x * x + y * y);
+      this.snx = x / mag;
+      this.sny = y / mag;
+      this.outFromStartDir = angleFromTo(-this.sny, this.snx, x, y);
+      this.startDirection = this.outFromStartDir + Math.PI * 0.5;
+    }
+    arcTo(x, y, turn) {
+      if (this.isDone) {
+        this.target.arcTo(x, y, turn);
+        return;
+      }
+      if (!this.haveStart) {
+        this.setStart(x, y);
+        this.target.arcTo(x, y, turn);
+        return;
+      }
+      const lineDir = angleFromTo(-this.sny, this.snx, x - this.tx, y - this.ty);
+      const startDir = lineDir - turn * 0.5;
+      const endDir = lineDir + turn * 0.5;
+      if (!this.qualified) {
+        if (endDir < this.startDirection - Math.PI * 0.125) {
+          this.qualified = true;
+        } else {
+          this.tx = x;
+          this.ty = y;
+          this.tdir = endDir;
+          this.haveArcs = true;
+          this.target.arcTo(x, y, turn);
+          return;
+        }
+      }
+      if (startDir < this.outFromStartDir || this.qualified && endDir > this.startDirection - Math.PI * 0.1) {
+        this.isDone = true;
+        this.target.arcTo(x, y, turn);
+        return;
+      }
+      if (this.haveArcs && startDir < this.tdir - 0.1) {
+        this.refillet(this.tx, this.ty, startDir);
+      }
+      let badArc = false;
+      if (turn < -1e-5) {
+        const [cx, cy] = arcCenter(this.tx, this.ty, x, y, turn);
+        if (angleFromTo(this.snx, this.sny, cx, cy) > 0) {
+          badArc = true;
+        }
+      }
+      if (!badArc) {
+        this.target.arcTo(x, y, turn);
+        this.tx = x;
+        this.ty = y;
+        this.tdir = endDir;
+        this.haveArcs = true;
+        this.target.arcTo(x, y, turn);
+        return;
+      }
+      if (endDir < this.outFromStartDir) {
+        const [mx, my] = interpolateArcTurn(this.tx, this.ty, x, y, turn, this.outFromStartDir - startDir);
+        this.refillet(mx, my, this.outFromStartDir);
+        this.target.arcTo(x, y, endDir - this.outFromStartDir);
+        this.isDone = true;
+      } else {
+        this.refillet(x, y, endDir);
+      }
+      this.tx = x;
+      this.ty = y;
+      this.tdir = endDir;
+      this.haveArcs = true;
+    }
+    refillet(x, y, direction) {
+      const turn = direction - this.startDirection;
+      let fxy = x * this.snx + y * this.sny;
+      const cxy = this.snx * y - this.sny * x;
+      fxy -= bulgeFactor(turn * 2) * cxy * 2;
+      this.target.reset();
+      this.target.moveTo(this.snx * fxy, this.sny * fxy);
+      this.target.arcTo(x, y, turn);
+    }
+  };
+  var InitialMaxInsideFilletPen = class {
+    constructor(target) {
+      this.haveStart = false;
+      this.haveArcs = false;
+      this.isDone = false;
+      this.qualified = false;
+      this.snx = 0;
+      this.sny = 0;
+      this.tx = 0;
+      this.ty = 0;
+      this.tdir = 0;
+      this.inFromStartDir = 0;
+      this.startDirection = 0;
+      this.target = target;
+      if (!target.reset) {
+        throw new Error("InitialMaxInsideFilletPen requires a resettable pen");
+      }
+    }
+    reset() {
+      this.target.reset();
+      this.haveStart = false;
+      this.haveArcs = false;
+      this.isDone = false;
+      this.qualified = false;
+    }
+    moveTo(x, y) {
+      if (this.haveArcs) {
+        this.isDone = true;
+      } else {
+        this.setStart(x, y);
+      }
+      this.target.moveTo(x, y);
+    }
+    setStart(x, y) {
+      this.haveStart = true;
+      this.tx = x;
+      this.ty = y;
+      const mag = Math.sqrt(x * x + y * y);
+      this.snx = x / mag;
+      this.sny = y / mag;
+      const outFromStartDir = angleFromTo(-this.sny, this.snx, x, y);
+      this.startDirection = outFromStartDir + Math.PI * 0.5;
+      this.inFromStartDir = outFromStartDir + Math.PI;
+    }
+    arcTo(x, y, turn) {
+      if (this.isDone) {
+        this.target.arcTo(x, y, turn);
+        return;
+      }
+      if (!this.haveStart) {
+        this.setStart(x, y);
+        this.target.arcTo(x, y, turn);
+        return;
+      }
+      const lineDir = angleFromTo(-this.sny, this.snx, x - this.tx, y - this.ty);
+      const startDir = lineDir - turn * 0.5;
+      const endDir = lineDir + turn * 0.5;
+      if (!this.qualified) {
+        if (endDir > this.startDirection + Math.PI * 0.125) {
+          this.qualified = true;
+        } else {
+          this.tx = x;
+          this.ty = y;
+          this.tdir = endDir;
+          this.haveArcs = true;
+          this.target.arcTo(x, y, turn);
+          return;
+        }
+      }
+      if (startDir > this.inFromStartDir || this.qualified && endDir < this.startDirection + Math.PI * 0.1) {
+        this.isDone = true;
+        this.target.arcTo(x, y, turn);
+        return;
+      }
+      if (this.haveArcs && startDir > this.tdir + 0.1) {
+        this.refillet(this.tx, this.ty, startDir);
+      }
+      let badArc = false;
+      if (turn > 1e-5) {
+        const [cx, cy] = arcCenter(this.tx, this.ty, x, y, turn);
+        if (angleFromTo(this.snx, this.sny, cx, cy) > 0) {
+          badArc = true;
+        }
+      }
+      if (!badArc) {
+        this.target.arcTo(x, y, turn);
+        this.tx = x;
+        this.ty = y;
+        this.tdir = endDir;
+        this.haveArcs = true;
+        this.target.arcTo(x, y, turn);
+        return;
+      }
+      if (endDir < this.inFromStartDir) {
+        const [mx, my] = interpolateArcTurn(this.tx, this.ty, x, y, turn, this.inFromStartDir - startDir);
+        this.refillet(mx, my, this.inFromStartDir);
+        this.target.arcTo(x, y, endDir - this.inFromStartDir);
+        this.isDone = true;
+      } else {
+        this.refillet(x, y, endDir);
+      }
+      this.tx = x;
+      this.ty = y;
+      this.tdir = endDir;
+      this.haveArcs = true;
+    }
+    refillet(x, y, direction) {
+      const turn = direction - this.startDirection;
+      let fxy = x * this.snx + y * this.sny;
+      const cxy = this.snx * y - this.sny * x;
+      fxy -= bulgeFactor(turn * 2) * cxy * 2;
+      this.target.reset();
+      this.target.moveTo(this.snx * fxy, this.sny * fxy);
+      this.target.arcTo(x, y, turn);
+    }
+  };
+  function applyMaxToothFillet(toothPath) {
+    toothPath = applyLeadingFillet(toothPath);
+    toothPath = reverseAndFlipPath(toothPath);
+    toothPath = applyLeadingFillet(toothPath);
+    toothPath = reverseAndFlipPath(toothPath);
+    return toothPath;
+  }
+  function reverseAndFlipPath(path) {
+    const rec = new XForm().scale(1, true).transformPath(path);
+    return rec.reversedPath;
+  }
+  function applyLeadingFillet(path) {
+    const rec = new XForm().processInput((pen) => new InitialMaxFilletPen(pen)).transformPath(path);
+    return rec.path;
+  }
+  function applyInternalToothFillet(toothPath) {
+    const fixedFromMid = new XForm().processInput((pen) => new InitialMaxInsideFilletPen(pen)).clip(0, 1, 0).transformPath(toothPath);
+    const outRec = new XForm().scale(1, true).transformPath(fixedFromMid.reversedPath);
+    fixedFromMid.path(outRec, false);
+    return outRec.path;
+  }
+
   // src/app.ts
   var DEFAULT_CLEARANCE_PERCENT = 15;
   var clearancePercent = DEFAULT_CLEARANCE_PERCENT;
@@ -1446,6 +1923,8 @@ CIRCLE
   var pinionTeeth = DEFAULT_PINION_TEETH;
   var DEFAULT_IS_INTERNAL = false;
   var isInternal = DEFAULT_IS_INTERNAL;
+  var DEFAULT_MAX_FILLET = false;
+  var maxFillet = DEFAULT_MAX_FILLET;
   var DEFAULT_FACE_TOL = 0.05;
   var faceTolPercent = DEFAULT_FACE_TOL;
   var DEFAULT_FILLET_TOL = 0.5;
@@ -1490,6 +1969,7 @@ CIRCLE
     profileShift = numberParam(params, "ps", -100, 100, DEFAULT_PROFILE_SHIFT_PERCENT);
     pinionTeeth = numberParam(params, "pt", 4, 200, DEFAULT_PINION_TEETH);
     gearTeeth = numberParam(params, "gt", -300, 300, DEFAULT_GEAR_TEETH);
+    maxFillet = stringParam(params, "f", "") === "mx";
     isInternal = false;
     if (gearTeeth < 0) {
       gearTeeth = -gearTeeth;
@@ -1534,6 +2014,7 @@ CIRCLE
     setNumber("cr", contactRatio);
     setNumber("gt", gearTeeth);
     setCheck("isinternal", isInternal);
+    setCheck("maxfillet", maxFillet);
     setNumber("pt", pinionTeeth);
     setNumber("ps", profileShift);
     setNumber("bp", balancePercent);
@@ -1568,16 +2049,26 @@ CIRCLE
     const faceT = faceTolPercent / (100 * Math.PI);
     const filletT = filletTolPercent / (100 * Math.PI);
     const pinionCutter = new GearCutter(pinionTeeth, pinionRadius, faceT, filletT);
-    pinionRack(new XFormPen(pinionCutter).rotate(-90).translate(0, pinionRadius), true);
+    new XForm().rotate(-90).translate(0, pinionRadius).processPath(pinionCutter, pinionRack, true);
     const pinionRecorder = new RecordingPen();
     pinionCutter.drawToothPath(pinionRecorder, true);
     pinionPath = pinionRecorder.path;
+    if (maxFillet) {
+      pinionPath = applyMaxToothFillet(pinionPath);
+      pinionRecorder.reset();
+      pinionPath(pinionRecorder, true);
+    }
     pinionSegsPerTooth = pinionRecorder.countSegments();
     const gearCutter = new GearCutter(gearTeeth, gearRadius, faceT, filletT);
-    gearRack(new XFormPen(gearCutter).rotate(-90).translate(0, gearRadius), true);
+    new XForm().rotate(-90).translate(0, gearRadius).processPath(gearCutter, gearRack, true);
     const gearRecorder = new RecordingPen();
     gearCutter.drawToothPath(gearRecorder, true);
     gearPath = gearRecorder.path;
+    if (maxFillet) {
+      gearPath = isInternal ? applyInternalToothFillet(gearPath) : applyMaxToothFillet(gearPath);
+      gearRecorder.reset();
+      gearPath(gearRecorder, true);
+    }
     gearSegsPerTooth = gearRecorder.countSegments();
     const paStr = String(Math.floor(pressureAngle));
     if (pinionSvgUrl) {
@@ -1621,6 +2112,9 @@ CIRCLE
       if (val !== String(defval)) {
         parts.push(id + "=" + val);
       }
+    }
+    if (document.getElementById("maxfillet").checked) {
+      parts.push("f=mx");
     }
     const sz = Number(document.getElementById("sz").value) || DEFAULT_SIZE_NUMBER;
     const meas = document.getElementById("meas").value;
@@ -1667,9 +2161,7 @@ CIRCLE
       },
       (pen, domove) => {
         for (let i = 0; i < nTeeth; ++i) {
-          const p = new XFormPen(pen);
-          p.rotate(i * 360 / nTeeth);
-          path(p, domove);
+          new XForm().rotate(i * 360 / nTeeth).processPath(pen, path, domove);
           domove = false;
         }
       }
@@ -1697,15 +2189,11 @@ CIRCLE
       (pen, domove) => {
         if (domove) {
           const capture = new LastPointCapturePen();
-          const p = new XFormPen(capture);
-          p.rotate((nTeeth - 1) * 360 / nTeeth).scale(scale);
-          path(p, true);
+          new XForm().rotate((nTeeth - 1) * 360 / nTeeth).scale(scale).processPath(capture, path, true);
           capture.transferMove(pen);
         }
         for (let i = 0; i < nTeeth; ++i) {
-          const p = new XFormPen(pen);
-          p.rotate(i * 360 / nTeeth).scale(scale);
-          path(p, false);
+          new XForm().rotate(i * 360 / nTeeth).scale(scale).processPath(pen, path, false);
         }
       }
     );
@@ -1745,10 +2233,9 @@ CIRCLE
     mint -= shift;
     maxt -= shift;
     let start = Math.floor(mint + 0.5);
-    const xpen = new XFormPen(pen);
-    rack(xpen.copy().translate(start + shift, 0), true);
+    new XForm().translate(start + shift, 0).processPath(pen, rack, true);
     for (let t = start + 1; t < maxt + 0.9; t++) {
-      rack(xpen.copy().translate(t + shift, 0), false);
+      new XForm().translate(t + shift, 0).processPath(pen, rack, false);
     }
   }
   function animationFrame() {
@@ -1759,52 +2246,53 @@ CIRCLE
     ctx.save();
     ctx.clearRect(0, 0, cwid, chei);
     let scale = cwid / 3;
-    const pen = new XFormPen(new CanvasPen(ctx)).translate(cwid / 2, chei / 2).scale(scale, true);
+    const xform = new XForm().translate(cwid / 2, chei / 2).scale(scale, true);
+    const canvasPen = new CanvasPen(ctx);
     let shift = Date.now() - animationStartTime;
     shift /= 4e3;
     shift -= Math.floor(shift);
     ctx.beginPath();
     ctx.strokeStyle = "#A0A0A0";
-    drawRack(pen, stdRack, shift, -1.5, 1.5);
+    drawRack(xform.apply(canvasPen), stdRack, shift, -1.5, 1.5);
     ctx.stroke();
     ctx.strokeStyle = "#000000";
     const bkwAdjust = backlashPercent / (400 * Math.PI);
     if (pinionPath) {
       ctx.beginPath();
-      const p = pen.copy().translate(0, -pinionRadius).rotate(90 - 360 / pinionTeeth);
-      p.rotate((shift + bkwAdjust) * -360 / pinionTeeth);
-      pinionPath(p, true);
-      p.rotate(360 / pinionTeeth);
-      pinionPath(p, true);
-      p.rotate(360 / pinionTeeth);
-      pinionPath(p, true);
-      p.rotate(360 / pinionTeeth);
-      pinionPath(p, true);
-      p.rotate(360 / pinionTeeth);
-      pinionPath(p, true);
+      const xf = new XForm().xformInput(xform).translate(0, -pinionRadius).rotate(90 - 360 / pinionTeeth);
+      xf.rotate((shift + bkwAdjust) * -360 / pinionTeeth);
+      xf.processPath(canvasPen, pinionPath, true);
+      xf.rotate(360 / pinionTeeth);
+      xf.processPath(canvasPen, pinionPath, true);
+      xf.rotate(360 / pinionTeeth);
+      xf.processPath(canvasPen, pinionPath, true);
+      xf.rotate(360 / pinionTeeth);
+      xf.processPath(canvasPen, pinionPath, true);
+      xf.rotate(360 / pinionTeeth);
+      xf.processPath(canvasPen, pinionPath, true);
       ctx.stroke();
     }
     if (gearPath) {
       ctx.beginPath();
-      let p;
+      let xf;
       let sh = shift;
       if (isInternal) {
-        p = pen.copy().translate(0, -gearRadius).rotate(90 - 360 / gearTeeth);
+        xf = new XForm().xformInput(xform).translate(0, -gearRadius).rotate(90 - 360 / gearTeeth);
       } else {
-        p = pen.copy().translate(0, gearRadius).scale(1, true).rotate(90 - 360 / gearTeeth);
+        xf = new XForm().xformInput(xform).translate(0, gearRadius).scale(1, true).rotate(90 - 360 / gearTeeth);
         sh += -0.5;
         sh -= Math.floor(sh);
       }
-      p.rotate((sh - bkwAdjust) * -360 / gearTeeth);
-      gearPath(p, true);
-      p.rotate(360 / gearTeeth);
-      gearPath(p, true);
-      p.rotate(360 / gearTeeth);
-      gearPath(p, true);
-      p.rotate(360 / gearTeeth);
-      gearPath(p, true);
-      p.rotate(360 / gearTeeth);
-      gearPath(p, true);
+      xf.rotate((sh - bkwAdjust) * -360 / gearTeeth);
+      xf.processPath(canvasPen, gearPath, true);
+      xf.rotate(360 / gearTeeth);
+      xf.processPath(canvasPen, gearPath, true);
+      xf.rotate(360 / gearTeeth);
+      xf.processPath(canvasPen, gearPath, true);
+      xf.rotate(360 / gearTeeth);
+      xf.processPath(canvasPen, gearPath, true);
+      xf.rotate(360 / gearTeeth);
+      xf.processPath(canvasPen, gearPath, true);
       ctx.stroke();
     }
     ctx.restore();
